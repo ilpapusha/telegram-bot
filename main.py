@@ -3,6 +3,7 @@ import asyncio
 import logging
 from typing import Dict, List, Tuple
 
+from aiogram.client.default import DefaultBot
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
