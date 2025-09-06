@@ -2,11 +2,12 @@ import os
 import asyncio
 import logging
 from typing import Dict, List, Tuple
+from html import escape
 
-from aiogram.client.default import DefaultBot
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 
 # ------------------ Настройки и инициализация ------------------
@@ -22,7 +23,12 @@ if not ADMIN_ID_ENV:
 ADMIN_ID = int(ADMIN_ID_ENV)
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(BOT_TOKEN, parse_mode="HTML")
+
+# aiogram 3.7+: parse_mode задаётся через DefaultBotProperties
+bot = Bot(
+    BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode="HTML")
+)
 dp = Dispatcher()
 
 # ------------------ Хранилище состояний (простое, в памяти) ------------------
@@ -73,9 +79,10 @@ def cart_actions_kb(has_items: bool) -> InlineKeyboardMarkup:
 # ------------------ Хэндлеры ------------------
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
+    uid = message.from_user.id
     # Сбросим возможные ожидания
-    waiting_for_perfume[message.from_user.id] = False
-    waiting_for_full_bottle[message.from_user.id] = False
+    waiting_for_perfume[uid] = False
+    waiting_for_full_bottle[uid] = False
     await message.answer(
         "Добро пожаловать в парфюмерный бот!\nВыберите вариант покупки:",
         reply_markup=main_menu_kb()
@@ -118,7 +125,7 @@ async def on_text(message: types.Message):
             "📩 <b>Новый запрос на целый флакон</b>\n\n"
             f"👤 Пользователь: @{username or 'без_username'}\n"
             f"🆔 ID: <code>{uid}</code>\n"
-            f"✍️ Сообщение: {message.html_text}",
+            f"✍️ Сообщение: {escape(message.text)}",
             reply_markup=kb
         )
         waiting_for_full_bottle[uid] = False
@@ -130,7 +137,7 @@ async def on_text(message: types.Message):
 
     # Сообщение — это ввод аромата для роспива
     if waiting_for_perfume.get(uid):
-        perfume = message.text.strip()
+        perfume = (message.text or "").strip()
         if not perfume:
             await message.answer("Пожалуйста, введите название аромата текстом.")
             return
@@ -138,7 +145,7 @@ async def on_text(message: types.Message):
         current_perfume[uid] = perfume
         waiting_for_perfume[uid] = False
         await message.answer(
-            f"Вы выбрали аромат: <b>{types.utils.html.quote_html(perfume)}</b>\n\n"
+            f"Вы выбрали аромат: <b>{escape(perfume)}</b>\n\n"
             "Теперь выберите объём 👇",
             reply_markup=volumes_kb()
         )
@@ -167,7 +174,7 @@ async def choose_volume(call: types.CallbackQuery):
     current_perfume[uid] = ""
 
     await call.message.edit_text(
-        f"✅ В корзину добавлено: <b>{types.utils.html.quote_html(perfume)}</b> — <b>{volume} мл</b>.\n\n"
+        f"✅ В корзину добавлено: <b>{escape(perfume)}</b> — <b>{volume} мл</b>.\n\n"
         "Что дальше?",
         reply_markup=after_add_item_kb()
     )
@@ -195,7 +202,7 @@ async def show_cart(call: types.CallbackQuery):
         )
         return
 
-    lines = [f"• {types.utils.html.quote_html(p)} — <b>{v} мл</b>" for p, v in cart]
+    lines = [f"• {escape(p)} — <b>{v} мл</b>" for p, v in cart]
     text = "🛒 <b>Ваша корзина</b>:\n\n" + "\n".join(lines)
     await call.message.edit_text(text, reply_markup=cart_actions_kb(True))
 
@@ -217,7 +224,7 @@ async def checkout(call: types.CallbackQuery):
         return
 
     # Сформируем текст корзины
-    lines = [f"• {types.utils.html.quote_html(p)} — {v} мл" for p, v in cart]
+    lines = [f"• {escape(p)} — {v} мл" for p, v in cart]
     cart_text = "\n".join(lines)
 
     # Сообщение пользователю
@@ -281,4 +288,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
