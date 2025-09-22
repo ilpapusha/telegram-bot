@@ -10,9 +10,11 @@ from dotenv import load_dotenv
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
+ADMIN_USERNAME = (os.getenv("ADMIN_USERNAME") or "").lstrip("@").strip()
 if not BOT_TOKEN: raise RuntimeError("BOT_TOKEN отсутствует")
 if not ADMIN_ID:  raise RuntimeError("ADMIN_ID отсутствует")
-SELLER_LINK = f"tg://user?id={ADMIN_ID}"
+SELLER_URL = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None  # безопасная ссылка (кнопка)
+# Если SELLER_URL нет — покажем текстовую инструкцию вместо кнопки
 
 # ---------- AIOGRAM ----------
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +22,7 @@ bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
 # ---------- ДАННЫЕ ----------
-KITS = [  # 5 шт = 5499, 3 шт = 3499
+KITS = [
  {"code":"vostochny","title":"🕌🌙 Набор «Восточный»","photo":"AgACAgIAAxkBAAN_aNF8NzIeIItUw9J4P3oLvcshM7wAAsf2MRtqspFKEp0AAee2XsX8AQADAgADeQADNgQ","items":[("Montale Arabians Tonka",5),("Mancera Red Tobacco",5),("Parfums de Marly Althair",5),("Azzaro The Most Wanted Parfum",5),("Armani Stronger With You Absolutely",5)]},
  {"code":"svezhiy","title":"💦🍃 Набор «Свежий»","photo":"AgACAgIAAxkBAAN9aNF8GK0h-cwWMHP6WkAlFwABQmwZAALF9jEbarKRShK5MEgD8MXBAQADAgADeQADNgQ","items":[("Dior Homme Cologne",5),("Parfums de Marly Greenley",5),("Prada L’Homme L’Eau",5),("Armani Acqua Di Gio Profondo Parfum",5),("Jean Paul Gaultier Le Beau Le Parfum",5)]},
  {"code":"vecherniy","title":"🌙✨ Набор «Вечерний»","photo":"AgACAgIAAxkBAAN4aNF5HwqkdgNcQjgg9gABSo25lFxfAAKw9jEbarKRSqr-Vm7eaG3mAQADAgADeQADNgQ","items":[("Armaf Club de Nuit Intense",5),("Jean Paul Gaultier Le Male Le Parfum",5),("Chanel Bleu de Chanel Eau de Parfum",5),("Yves Saint Laurent Myslf Eau de Parfum",5),("Tom Ford Noir",5)]},
@@ -123,12 +125,18 @@ def kit_price(k) -> int:
 def kb(rows) -> KB:
     return KB(inline_keyboard=[[BTN(**b) for b in row] for row in rows])
 
+def seller_row():
+    # безопасная кнопка только если есть username
+    return ([{"text":"📨 Связаться с продавцом","url":SELLER_URL}]
+            if SELLER_URL else
+            [{"text":"📨 Связаться с продавцом","callback_data":"contact_seller"}])
+
 def menu_kb() -> KB:
     return kb([[{"text":"💉 Купить на роспив","callback_data":"buy_split"}],
                [{"text":"🎁 Готовые наборы","callback_data":"show_kits"}],
                [{"text":"💎 Купить целый флакон","callback_data":"buy_full"}],
                [{"text":"🛒 Моя корзина","callback_data":"show_cart"}],
-               [{"text":"📨 Связаться с продавцом","url":SELLER_LINK}]])
+               seller_row()])
 
 def brands_kb() -> KB:
     rows = [[{"text":b["brand"],"callback_data":f"brand_{i}"}] for i,b in enumerate(DECANT_BRANDS)]
@@ -140,7 +148,7 @@ def decant_kb(bi:int, pi:int, prices:dict) -> KB:
     first = [{"text":f"{ml} мл — {price_fmt(prices[ml])}","callback_data":f"dec_add_{bi}_{pi}_{ml}"} for ml in (5,8,18) if ml in prices]
     rows = [first,
             [{"text":"🛒 Моя корзина","callback_data":"show_cart"}],
-            [{"text":"📨 Связаться с продавцом","url":SELLER_LINK}],
+            seller_row(),
             [{"text":"⬅️ К брендам","callback_data":"buy_split"}]]
     return kb(rows)
 
@@ -198,7 +206,6 @@ def cart_text(uid: int) -> str:
     parts = ["🛒 <b>Ваша корзина</b>:"]
     kits_total = dec_total = 0
 
-    # наборы
     if kits_map:
         parts += ["", "<b>🎁 Наборы</b>"]
         for title, count in sorted(kits_map.items(), key=lambda x: x[0].lower()):
@@ -209,14 +216,12 @@ def cart_text(uid: int) -> str:
             else:
                 parts.append(f"🎁 {escape(title)} ×{count}")
 
-    # роспив
     if dec_map:
         parts += ["", "<b>💧 Роспив</b>"]
         for (name, ml, price_one), count in sorted(dec_map.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
             sub = price_one * count; dec_total += sub
             parts.append(f"• {escape(name)} — {ml} мл ×{count} — <b>{price_fmt(sub)}</b>")
 
-    # ручные без цены
     if manual_map:
         parts += ["", "<b>✍️ Позиции без цены</b>"]
         for (name, ml), count in sorted(manual_map.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
@@ -289,7 +294,7 @@ async def dec_add(c: types.CallbackQuery):
         reply_markup=kb([[{"text":"➕ Добавить ещё","callback_data":"buy_split"}],
                          [{"text":"🛒 Моя корзина","callback_data":"show_cart"}],
                          [{"text":"✅ Оформить заказ","callback_data":"checkout"}],
-                         [{"text":"📨 Связаться с продавцом","url":SELLER_LINK}],
+                         seller_row(),
                          [{"text":"⬅️ В меню","callback_data":"back_to_menu"}]])
     )
 
@@ -298,18 +303,21 @@ async def dec_add(c: types.CallbackQuery):
 async def on_text(m: types.Message):
     uid = m.from_user.id
     if WAIT_FULL.get(uid):
+        # уведомление админу: кнопка только если у клиента есть username
         un = m.from_user.username
-        link = f"https://t.me/{un}" if un else f"tg://user?id={uid}"
+        buttons = [[BTN(text="💬 Написать клиенту", url=f"https://t.me/{un}")]] if un else None
+        client_anchor = (f'<a href="https://t.me/{un}">@{un}</a>' if un
+                         else f'<a href="tg://user?id={uid}">Открыть чат</a>')
         await bot.send_message(
             ADMIN_ID,
             "📩 <b>Новый запрос на целый флакон</b>\n"
-            f"👤 @{un or 'без_username'}\n🆔 <code>{uid}</code>\n✍️ {escape(m.text)}",
-            reply_markup=KB(inline_keyboard=[[BTN(text="💬 Написать клиенту", url=link)]])
+            f"👤 {client_anchor}\n🆔 <code>{uid}</code>\n✍️ {escape(m.text)}",
+            reply_markup=KB(inline_keyboard=buttons) if buttons else None
         )
         WAIT_FULL[uid] = False
         return await show_screen(
             m, "✅ Запрос отправлен продавцу.\nℹ️ Он уточнит актуальную цену и свяжется с вами.",
-            reply_markup=kb([[{"text":"📨 Связаться с продавцом","url":SELLER_LINK}],
+            reply_markup=kb([seller_row(),
                              [{"text":"⬅️ В меню","callback_data":"back_to_menu"}]])
         )
     if WAIT_MANUAL.get(uid):
@@ -339,18 +347,68 @@ async def manual_volume(c: types.CallbackQuery):
         reply_markup=kb([[{"text":"➕ Ещё аромат","callback_data":"buy_split"}],
                          [{"text":"🛒 Моя корзина","callback_data":"show_cart"}],
                          [{"text":"✅ Оформить заказ","callback_data":"checkout"}],
-                         [{"text":"📨 Связаться с продавцом","url":SELLER_LINK}],
+                         seller_row(),
                          [{"text":"⬅️ В меню","callback_data":"back_to_menu"}]])
     )
 
 # ---------- КОРЗИНА ----------
+def aggregate_cart(uid: int):
+    kits_map: dict[str,int] = {}
+    dec_map: dict[tuple[str,int,int],int] = {}
+    manual_map: dict[tuple[str,int],int] = {}
+    for it in CART.get(uid, []):
+        if it.get("kit"):
+            t = it["kit"]; kits_map[t] = kits_map.get(t, 0) + 1
+        elif it.get("type") == "decant" and it.get("price"):
+            key = (it["name"], int(it["ml"]), int(it["price"]))
+            dec_map[key] = dec_map.get(key, 0) + 1
+        else:
+            key = (it["name"], int(it["ml"]))
+            manual_map[key] = manual_map.get(key, 0) + 1
+    return kits_map, dec_map, manual_map
+
+def cart_text(uid: int) -> str:
+    cart = CART.get(uid, [])
+    if not cart: return "🛒 Ваша корзина пуста."
+
+    kits_map, dec_map, manual_map = aggregate_cart(uid)
+    parts = ["🛒 <b>Ваша корзина</b>:"]
+    kits_total = dec_total = 0
+
+    if kits_map:
+        parts += ["", "<b>🎁 Наборы</b>"]
+        for title, count in sorted(kits_map.items(), key=lambda x: x[0].lower()):
+            k = next((x for x in KITS if x["title"] == title), None)
+            if k:
+                one = kit_price(k); sub = one * count; kits_total += sub
+                parts.append(f"🎁 {escape(title)} ×{count} — <b>{price_fmt(sub)}</b>")
+            else:
+                parts.append(f"🎁 {escape(title)} ×{count}")
+
+    if dec_map:
+        parts += ["", "<b>💧 Роспив</b>"]
+        for (name, ml, price_one), count in sorted(dec_map.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
+            sub = price_one * count; dec_total += sub
+            parts.append(f"• {escape(name)} — {ml} мл ×{count} — <b>{price_fmt(sub)}</b>")
+
+    if manual_map:
+        parts += ["", "<b>✍️ Позиции без цены</b>"]
+        for (name, ml), count in sorted(manual_map.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
+            parts.append(f"• {escape(name)} — {ml} мл ×{count}")
+
+    total = kits_total + dec_total
+    if total > 0:
+        parts += ["", f"<b>Итого: {price_fmt(total)}</b>"]
+
+    return "\n".join(parts)
+
 @dp.callback_query(F.data=="show_cart")
 async def show_cart(c: types.CallbackQuery):
     txt = cart_text(c.from_user.id)
     has = bool(CART.get(c.from_user.id))
     rows = [[{"text":"✅ Оформить заказ","callback_data":"checkout"}]] if has else []
     rows += [[{"text":"🧹 Очистить","callback_data":"clear_cart"}]] if has else []
-    rows += [[{"text":"📨 Связаться с продавцом","url":SELLER_LINK}],
+    rows += [seller_row(),
              [{"text":"⬅️ В меню","callback_data":"back_to_menu"}]]
     await show_screen(c.message, txt, reply_markup=kb(rows))
 
@@ -370,21 +428,28 @@ async def checkout(c: types.CallbackQuery):
     await show_screen(
         c.message,
         "✅ Заказ сформирован и отправлен продавцу.\nℹ️ Он уточнит актуальную цену и свяжется с вами.\n\n"+txt,
-        reply_markup=kb([[{"text":"📨 Связаться с продавцом","url":SELLER_LINK}],
+        reply_markup=kb([seller_row(),
                          [{"text":"⬅️ В меню","callback_data":"back_to_menu"}]])
     )
+    # уведомление админу — безопасные кнопки
     un = c.from_user.username
-    link = f"https://t.me/{un}" if un else f"tg://user?id={uid}"
+    buttons = [[BTN(text="💬 Написать клиенту", url=f"https://t.me/{un}")]] if un else None
+    client_anchor = (f'<a href="https://t.me/{un}">@{un}</a>' if un
+                     else f'<a href="tg://user?id={uid}">Открыть чат</a>')
     await bot.send_message(
         ADMIN_ID,
         "📩 <b>Новый заказ</b>\n"
-        f"👤 @{un or 'без_username'}\n"
+        f"👤 {client_anchor}\n"
         f"🆔 <code>{uid}</code>\n\n" + txt,
-        reply_markup=KB(inline_keyboard=[[BTN(text="💬 Написать клиенту", url=link)]])
+        reply_markup=KB(inline_keyboard=buttons) if buttons else None
     )
     CART[uid] = []; CUR_NAME[uid] = ""
 
 # ---------- ГОТОВЫЕ НАБОРЫ ----------
+def kit_price(k) -> int:
+    n = len(k["items"])
+    return 5499 if n >= 5 else (3499 if n == 3 else 0)
+
 @dp.callback_query(F.data=="show_kits")
 async def show_kits(c: types.CallbackQuery):
     await cleanup_user(c.from_user.id)
@@ -395,7 +460,7 @@ async def show_kits(c: types.CallbackQuery):
         cap = f"{k['title']}\n\n" + "\n".join(lines) + f"\n\n💰 <b>Цена: {price_fmt(kit_price(k))}</b>"
         markup = kb([[{"text":"➕ Добавить набор","callback_data":f"kit_add_{i}"}],
                      [{"text":"🛒 Моя корзина","callback_data":"show_cart"}],
-                     [{"text":"📨 Связаться с продавцом","url":SELLER_LINK}],
+                     seller_row(),
                      [{"text":"⬅️ В меню","callback_data":"back_to_menu"}]])
         await push_card(c.message, cap, photo_id=k.get("photo") or None, reply_markup=markup)
 
@@ -425,7 +490,7 @@ async def buy_full(c: types.CallbackQuery):
     await show_screen(
         c.message,
         "💎 Напишите название парфюма и желаемый объём.\nℹ️ Продавец уточнит актуальную цену и свяжется с вами.",
-        reply_markup=kb([[{"text":"📨 Связаться с продавцом","url":SELLER_LINK}],
+        reply_markup=kb([seller_row(),
                          [{"text":"⬅️ В меню","callback_data":"back_to_menu"}]])
     )
 
@@ -435,13 +500,20 @@ async def photo_id(m: types.Message):
     if m.from_user.id == ADMIN_ID:
         await m.answer(f"file_id: <code>{m.photo[-1].file_id}</code>")
 
-# ---------- НАЗАД В МЕНЮ ----------
+# ---------- НАЗАД В МЕНЮ / КОНТАКТ ----------
 @dp.callback_query(F.data=="back_to_menu")
 async def back_to_menu(c: types.CallbackQuery):
     uid = c.from_user.id
     WAIT_FULL[uid] = WAIT_MANUAL[uid] = False
     CUR_NAME[uid] = ""
     await show_screen(c.message, "Меню:", reply_markup=menu_kb())
+
+@dp.callback_query(F.data=="contact_seller")
+async def contact_seller(c: types.CallbackQuery):
+    if SELLER_URL:
+        await c.message.answer(f"Свяжитесь с продавцом: {SELLER_URL}")
+    else:
+        await c.message.answer("У продавца нет публичного username.\nПросто напишите ваш вопрос ответом на это сообщение — продавец получит его.")
 
 # ---------- MAIN ----------
 async def main(): await dp.start_polling(bot)
