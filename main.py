@@ -1,12 +1,12 @@
 import os
 import asyncio
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Any, Tuple
 from html import escape
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, InputMediaPhoto
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 
@@ -20,25 +20,25 @@ if not ADMIN_ID_ENV:
     raise RuntimeError("ADMIN_ID отсутствует в .env")
 ADMIN_ID = int(ADMIN_ID_ENV)
 
-# Опционально: ссылка на контакт продавца (если нет username, используем tg://user?id)
-SELLER_LINK = os.getenv("SELLER_LINK") or f"tg://user?id={ADMIN_ID}"
+# всегда открываем диалог с тобой по ID
+SELLER_LINK = f"tg://user?id={ADMIN_ID}"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
 # ------------------ Хранилище состояний ------------------
-carts: Dict[int, List[Tuple[str, int]]] = {}
+# Корзина: список словарей {"name": str, "ml": int, "kit": Optional[str]}
+carts: Dict[int, List[Dict[str, Any]]] = {}
 waiting_for_perfume: Dict[int, bool] = {}
 current_perfume: Dict[int, str] = {}
 waiting_for_full_bottle: Dict[int, bool] = {}
 
-# ------------------ Готовые наборы (твои данные) ------------------
-# Каждый набор: code, title, photo (file_id), items=[(название, мл), ...]
+# ------------------ Готовые наборы ------------------
 KITS = [
     {
         "code": "vostochny",
-        "title": "🎁 Набор «Восточный»",
+        "title": "🕌🌙 Набор «Восточный»",
         "photo": "AgACAgIAAxkBAAN_aNF8NzIeIItUw9J4P3oLvcshM7wAAsf2MRtqspFKEp0AAee2XsX8AQADAgADeQADNgQ",
         "items": [
             ("Montale Arabians Tonka", 5),
@@ -50,7 +50,7 @@ KITS = [
     },
     {
         "code": "svezhiy",
-        "title": "🎁 Набор «Свежий»",
+        "title": "💦🍃 Набор «Свежий»",
         "photo": "AgACAgIAAxkBAAN9aNF8GK0h-cwWMHP6WkAlFwABQmwZAALF9jEbarKRShK5MEgD8MXBAQADAgADeQADNgQ",
         "items": [
             ("Dior Homme Cologne", 5),
@@ -62,7 +62,7 @@ KITS = [
     },
     {
         "code": "vecherniy",
-        "title": "🎁 Набор «Вечерний»",
+        "title": "🌙✨ Набор «Вечерний»",
         "photo": "AgACAgIAAxkBAAN4aNF5HwqkdgNcQjgg9gABSo25lFxfAAKw9jEbarKRSqr-Vm7eaG3mAQADAgADeQADNgQ",
         "items": [
             ("Armaf Club de Nuit Intense", 5),
@@ -74,7 +74,7 @@ KITS = [
     },
     {
         "code": "komplimentarnyy",
-        "title": "🎁 Набор «Комплиментарный»",
+        "title": "💘🌟 Набор «Комплиментарный»",
         "photo": "AgACAgIAAxkBAAOCaNF8eAd67W7XRioTneRMlxlJSb4AAsr2MRtqspFKaGxSSlgviZYBAAMCAAN5AAM2BA",
         "items": [
             ("Initio Side Effect", 5),
@@ -86,7 +86,7 @@ KITS = [
     },
     {
         "code": "na_vse_sluchai",
-        "title": "🎁 Набор «На все случаи жизни»",
+        "title": "🎯🧩 Набор «На все случаи жизни»",
         "photo": "AgACAgIAAxkBAAOEaNF8i5lVXVryRVLRgEMDH8EpLl8AAsv2MRtqspFKosf2SsGkXIoBAAMCAAN5AAM2BA",
         "items": [
             ("Montale Arabians Tonka", 5),
@@ -98,7 +98,7 @@ KITS = [
     },
     {
         "code": "big_g",
-        "title": "🎁 Набор «BIG G»",
+        "title": "🦁💥 Набор «BIG G»",
         "photo": "AgACAgIAAxkBAAOGaNF8nCTpNhq-UNWry9jtTr8mTnAAAsz2MRtqspFKDfNtpsgRR90BAAMCAAN5AAM2BA",
         "items": [
             ("Parfums de Marly Layton", 5),
@@ -108,7 +108,7 @@ KITS = [
     },
     {
         "code": "dzhentelmen",
-        "title": "🎁 Набор «Джентельмен»",
+        "title": "🤵🎩 Набор «Джентельмен»",
         "photo": "AgACAgIAAxkBAAOIaNF8tAfhnzZUEA5IVrXE18KM9L8AAs32MRtqspFK5w3gcQQrVvMBAAMCAAN5AAM2BA",
         "items": [
             ("Parfums de Marly Sedley", 5),
@@ -118,7 +118,7 @@ KITS = [
     },
     {
         "code": "papochka",
-        "title": "🎁 Набор «Папочка»",
+        "title": "👑🔥 Набор «Папочка»",
         "photo": "AgACAgIAAxkBAAOKaNF8yBFmwnJyKoc4jSiQXkYEbgsAAs72MRtqspFK2Y3owjZIH4cBAAMCAAN5AAM2BA",
         "items": [
             ("Parfums de Marly Althaïr", 5),
@@ -127,6 +127,43 @@ KITS = [
         ],
     },
 ]
+
+# ------------------ Утилиты ------------------
+def kit_price(kit: Dict[str, Any]) -> int:
+    """Цена набора по количеству позиций: 5 шт → 5499, 3 шт → 3499."""
+    n = len(kit.get("items", []))
+    if n >= 5:
+        return 5499
+    if n == 3:
+        return 3499
+    return 0  # для других размеров пока цена не задана
+
+def format_price(rub: int) -> str:
+    return f"{rub} ₽" if rub else "—"
+
+def cart_kits_summary(cart: List[Dict[str, Any]]) -> Tuple[List[str], int]:
+    """
+    Возвращает:
+      - список строк с ценами по каждому набору (уникальные названия),
+      - общую сумму по наборам.
+    Позиции роспива в сумму не входят (пока).
+    """
+    # соберём уникальные названия наборов, присутствующих в корзине
+    unique_titles = []
+    for it in cart:
+        title = it.get("kit")
+        if title and title not in unique_titles:
+            unique_titles.append(title)
+
+    lines = []
+    total = 0
+    for title in unique_titles:
+        k = next((kk for kk in KITS if kk["title"] == title), None)
+        if k:
+            price = kit_price(k)
+            total += price
+            lines.append(f"• {escape(title)} — <b>{format_price(price)}</b>")
+    return lines, total
 
 # ------------------ Клавиатуры ------------------
 def main_menu_kb() -> InlineKeyboardMarkup:
@@ -166,14 +203,7 @@ def cart_actions_kb(has_items: bool) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def kits_list_kb() -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=kit["title"], callback_data=f"kit_view_{idx}")]
-            for idx, kit in enumerate(KITS)]
-    rows.append([InlineKeyboardButton(text="🛒 Моя корзина", callback_data="show_cart")])
-    rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="back_to_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def kit_view_kb(idx: int) -> InlineKeyboardMarkup:
+def kit_card_kb(idx: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить набор в корзину", callback_data=f"kit_add_{idx}")],
         [InlineKeyboardButton(text="🛒 Моя корзина", callback_data="show_cart")],
@@ -269,14 +299,12 @@ async def choose_volume(call: types.CallbackQuery):
     if not perfume:
         await call.answer("Сначала введите название аромата.", show_alert=True)
         return
-
     volume_map = {"volume_5": 5, "volume_8": 8, "volume_18": 18}
     volume = volume_map.get(call.data, 0)
     if not volume:
         await call.answer("Неизвестный объём", show_alert=True)
         return
-
-    carts.setdefault(uid, []).append((perfume, volume))
+    carts.setdefault(uid, []).append({"name": perfume, "ml": volume, "kit": None})
     current_perfume[uid] = ""
     await call.message.edit_text(
         f"✅ В корзину добавлено: <b>{escape(perfume)}</b> — <b>{volume} мл</b>.\n\nЧто дальше?",
@@ -296,6 +324,7 @@ async def add_more(call: types.CallbackQuery):
         ])
     )
 
+# ----------- КОРЗИНА -----------
 @dp.callback_query(F.data == "show_cart")
 async def show_cart(call: types.CallbackQuery):
     uid = call.from_user.id
@@ -303,7 +332,22 @@ async def show_cart(call: types.CallbackQuery):
     if not cart:
         await call.message.edit_text("🛒 Ваша корзина пуста.", reply_markup=cart_actions_kb(False))
         return
-    lines = [f"• {escape(p)} — <b>{v} мл</b>" for p, v in cart]
+
+    # список позиций
+    lines = [
+        f"• {escape(item['name'])} — <b>{item['ml']} мл</b>"
+        + (f" <i>(набор: {escape(item['kit'])})</i>" if item.get("kit") else "")
+        for item in cart
+    ]
+
+    # цены наборов и итог
+    kit_lines, total = cart_kits_summary(cart)
+    if kit_lines:
+        lines.append("")  # пустая строка
+        lines.append("<b>Цены наборов:</b>")
+        lines.extend(kit_lines)
+        lines.append(f"\n<b>Итого за наборы: {format_price(total)}</b>")
+
     text = "🛒 <b>Ваша корзина</b>:\n\n" + "\n".join(lines)
     await call.message.edit_text(text, reply_markup=cart_actions_kb(True))
 
@@ -319,9 +363,26 @@ async def checkout(call: types.CallbackQuery):
     if not cart:
         await call.answer("Корзина пуста.", show_alert=True)
         return
-    lines = [f"• {escape(p)} — {v} мл" for p, v in cart]
+
+    # позиции
+    lines = [
+        f"• {escape(item['name'])} — {item['ml']} мл"
+        + (f" (набор: {escape(item['kit'])})" if item.get("kit") else "")
+        for item in cart
+    ]
+
+    # цены наборов и итог
+    kit_lines, total = cart_kits_summary(cart)
+    if kit_lines:
+        lines.append("")
+        lines.append("Цены наборов:")
+        lines.extend(kit_lines)
+        lines.append(f"\n<b>Итого за наборы: {format_price(total)}</b>")
+
     cart_text = "\n".join(lines)
     total_items = len(cart)
+
+    # пользователю
     await call.message.edit_text(
         "✅ Заказ сформирован и отправлен продавцу.\n"
         "ℹ️ Продавец уточнит актуальную цену и свяжется с вами.\n\n"
@@ -331,6 +392,8 @@ async def checkout(call: types.CallbackQuery):
             [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_to_menu")],
         ])
     )
+
+    # админу
     username = call.from_user.username
     profile_link = f"https://t.me/{username}" if username else f"tg://user?id={uid}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -338,51 +401,36 @@ async def checkout(call: types.CallbackQuery):
     ])
     await bot.send_message(
         ADMIN_ID,
-        "📩 <b>Новый заказ (роспив)</b>\n\n"
+        "📩 <b>Новый заказ</b>\n\n"
         f"👤 Пользователь: @{username or 'без_username'}\n"
         f"🆔 ID: <code>{uid}</code>\n"
         f"🧾 Позиции: <b>{total_items}</b>\n\n"
         f"{cart_text}",
         reply_markup=kb
     )
+
     carts[uid] = []
     current_perfume[uid] = ""
 
-# ----------- ГОТОВЫЕ НАБОРЫ -----------
+# ----------- ГОТОВЫЕ НАБОРЫ (сразу все карточки с ценой) -----------
 @dp.callback_query(F.data == "show_kits")
 async def show_kits(call: types.CallbackQuery):
-    if not KITS:
-        await call.message.edit_text(
-            "Пока нет доступных наборов.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_to_menu")]
-            ])
-        )
-        return
-    await call.message.edit_text("Выберите готовый набор:", reply_markup=kits_list_kb())
-
-@dp.callback_query(F.data.startswith("kit_view_"))
-async def kit_view(call: types.CallbackQuery):
-    try:
-        idx = int(call.data.split("_")[-1])
-        kit = KITS[idx]
-    except Exception:
-        await call.answer("Набор не найден", show_alert=True)
-        return
-
-    lines = [f"• {escape(p)} — <b>{v} мл</b>" for p, v in kit["items"]]
-    caption = f"{kit['title']}\n\n" + "\n".join(lines)
-
-    # отправим карточку фото + подпись как новое сообщение
-    if kit.get("photo"):
-        await call.message.answer_photo(
-            photo=kit["photo"],
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=kit_view_kb(idx)
-        )
-    else:
-        await call.message.answer(caption, parse_mode="HTML", reply_markup=kit_view_kb(idx))
+    await call.message.answer("🎁 Доступные наборы (листай вверх/вниз):")
+    for idx, kit in enumerate(KITS):
+        lines = [f"• {escape(p)} — <b>{v} мл</b>" for p, v in kit["items"]]
+        price_line = f"\n💰 <b>Цена: {format_price(kit_price(kit))}</b>"
+        caption = f"{kit['title']}\n\n" + "\n".join(lines) + price_line
+        if kit.get("photo"):
+            await call.message.answer_photo(
+                photo=kit["photo"],
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kit_card_kb(idx)
+            )
+        else:
+            await call.message.answer(
+                caption, parse_mode="HTML", reply_markup=kit_card_kb(idx)
+            )
 
 @dp.callback_query(F.data.startswith("kit_add_"))
 async def kit_add(call: types.CallbackQuery):
@@ -396,21 +444,14 @@ async def kit_add(call: types.CallbackQuery):
         return
 
     for perfume, vol in kit["items"]:
-        carts[uid].append((perfume, vol))
+        carts[uid].append({"name": perfume, "ml": vol, "kit": kit["title"]})
 
     added_list = "\n".join([f"• {escape(p)} — <b>{v} мл</b>" for p, v in kit["items"]])
-    await call.message.edit_text(
-        f"✅ В корзину добавлен набор:\n<b>{kit['title']}</b>\n\n{added_list}\n\nЧто дальше?",
+    await call.message.answer(
+        f"✅ В корзину добавлен набор:\n<b>{kit['title']}</b>\n\n{added_list}\n\n"
+        f"💰 <b>Цена набора: {format_price(kit_price(kit))}</b>\n\nЧто дальше?",
         reply_markup=after_add_item_kb()
     )
-
-@dp.callback_query(F.data == "back_to_menu")
-async def back_to_menu(call: types.CallbackQuery):
-    uid = call.from_user.id
-    waiting_for_perfume[uid] = False
-    waiting_for_full_bottle[uid] = False
-    current_perfume[uid] = ""
-    await call.message.edit_text("Выберите вариант покупки:", reply_markup=main_menu_kb())
 
 # ----------- ЦЕЛЫЙ ФЛАКОН -----------
 @dp.callback_query(F.data == "buy_full")
