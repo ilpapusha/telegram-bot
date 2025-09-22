@@ -1,6 +1,5 @@
 import os, asyncio, logging
 from html import escape as html_escape
-from typing import Dict, List, Tuple
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup as KB, InlineKeyboardButton as BTN
@@ -14,7 +13,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
 ADMIN_USERNAME = (os.getenv("ADMIN_USERNAME") or "").lstrip("@").strip()
 if not BOT_TOKEN: raise RuntimeError("BOT_TOKEN отсутствует")
 if not ADMIN_ID:  raise RuntimeError("ADMIN_ID отсутствует")
-SELLER_URL = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None  # безопасная URL-кнопка
+SELLER_URL = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None
 
 # ---------- ТЕКСТЫ ----------
 WELCOME_TEXT = (
@@ -157,8 +156,8 @@ def brands_kb() -> KB:
     return kb(rows)
 
 def decant_kb(bi:int, pi:int, prices:dict) -> KB:
-    volumes = [{"text":f"{ml} мл — {price_fmt(prices[ml])}",
-                "callback_data":f"dec_add_{bi}_{pi}_{ml}"} for ml in (5,8,18) if ml in prices]
+    # только объёмы на кнопках
+    volumes = [{"text":f"{ml} мл", "callback_data":f"dec_add_{bi}_{pi}_{ml}"} for ml in (5,8,18) if ml in prices]
     return kb([
         volumes,
         [{"text":"↩️ К бренду","callback_data":f"brand_{bi}"}],
@@ -183,7 +182,14 @@ async def cleanup_user(uid: int):
 
 async def show_screen(base_msg: types.Message, text: str, *, reply_markup=None):
     uid = base_msg.chat.id
+    # удалим предыдущее «полотно» бота
     await cleanup_user(uid)
+    # удалим сообщение, на котором кликнули (если это было сообщение бота)
+    try:
+        await bot.delete_message(base_msg.chat.id, base_msg.message_id)
+    except:
+        pass
+    # покажем новый экран
     m = await base_msg.answer(text, reply_markup=reply_markup)
     await _remember(m)
     return m
@@ -196,13 +202,8 @@ async def push_card(base_msg: types.Message, text_or_caption: str, *, photo_id: 
     await _remember(m)
     return m
 
-# --- агрегатор корзины (правильный учёт наборов) ---
+# --- агрегатор корзины ---
 def aggregate_cart(uid: int):
-    """
-    kits_map: {title: kit_count}
-    dec_map: {(name, ml, price): count}
-    manual_map: {(name, ml): count}
-    """
     kits_raw: dict[str, int] = {}
     dec_map: dict[tuple[str, int, int], int] = {}
     manual_map: dict[tuple[str, int], int] = {}
@@ -221,12 +222,8 @@ def aggregate_cart(uid: int):
     kits_map: dict[str, int] = {}
     for title, pieces in kits_raw.items():
         k = next((x for x in KITS if x["title"] == title), None)
-        if not k:
-            kits_map[title] = max(1, pieces)
-            continue
-        size = max(1, len(k["items"]))  # 3 или 5
+        size = max(1, len(k["items"])) if k else 1
         kits_map[title] = pieces // size
-
     return kits_map, dec_map, manual_map
 
 def cart_text(uid: int) -> str:
@@ -290,6 +287,11 @@ async def buy_split_manual(c: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("brand_"))
 async def show_brand(c: types.CallbackQuery):
+    # удалим сообщение, по которому кликнули (шапка не зависнет сверху)
+    try:
+        await bot.delete_message(c.message.chat.id, c.message.message_id)
+    except:
+        pass
     try:
         bi = int(c.data.split("_")[1])
         b = DECANT_BRANDS[bi]
@@ -332,7 +334,7 @@ async def dec_add(c: types.CallbackQuery):
     ])
     await show_screen(
         c.message,
-        f"✅ В корзину: <b>{html_escape(it['title'])}</b> — <b>{ml} мл</b> — <b>{price_fmt(price)}</b>\n\nЧто дальше?",
+        f"✅ В корзину: <b>{html_escape(it['title'])}</b> — <b>{ml} мл</b>\n\nЧто дальше?",
         reply_markup=reply_markup
     )
 
@@ -341,7 +343,7 @@ async def dec_add(c: types.CallbackQuery):
 async def on_text(m: types.Message):
     uid = m.from_user.id
 
-    # Диалог «связаться с продавцом» через бота
+    # Связаться с продавцом через бота
     if WAIT_CONTACT.get(uid):
         WAIT_CONTACT[uid] = False
         un = m.from_user.username
@@ -374,7 +376,7 @@ async def on_text(m: types.Message):
         )
         WAIT_FULL[uid] = False
         return await show_screen(
-            m, "✅ Запрос отправлен продавцу.\nℹ️ Он уточнит актуальную цену и свяжется с вами.",
+            m, "✅ Запрос отправлен продавцу.\nОн свяжется с вами.",
             reply_markup=kb([seller_row(),
                              [{"text":"⬅️ В каталог","callback_data":"back_to_menu"}]])
         )
@@ -414,10 +416,7 @@ async def manual_volume(c: types.CallbackQuery):
 
 # ---------- КОРЗИНА ----------
 def _short_item_label(it: dict) -> str:
-    if it.get("kit"):
-        return f"[набор] {it['name']} {it['ml']} мл"
-    if it.get("type") == "decant" and it.get("price") is not None:
-        return f"{it['name']} {it['ml']} мл"
+    if it.get("kit"): return f"[набор] {it['name']} {it['ml']} мл"
     return f"{it['name']} {it['ml']} мл"
 
 @dp.callback_query(F.data=="show_cart")
@@ -427,8 +426,7 @@ async def show_cart(c: types.CallbackQuery):
     rows = [[{"text":"✅ Оформить заказ","callback_data":"checkout"}]] if has else []
     rows += [[{"text":"🗑 Удалить позицию","callback_data":"del_menu"}]] if has else []
     rows += [[{"text":"🧹 Очистить","callback_data":"clear_cart"}]] if has else []
-    rows += [seller_row(),
-             [{"text":"⬅️ В каталог","callback_data":"back_to_menu"}]]
+    rows += [seller_row(), [{"text":"⬅️ В каталог","callback_data":"back_to_menu"}]]
     await show_screen(c.message, txt, reply_markup=kb(rows))
 
 @dp.callback_query(F.data=="del_menu")
@@ -446,7 +444,9 @@ async def del_menu(c: types.CallbackQuery):
     if kits_map:
         rows.append([{"text":"— Удалить набор целиком —", "callback_data":"noop"}])
         for title, _ in kits_map.items():
-            rows.append([{"text": f"🗑 {title} ×1", "callback_data": f"del_kit_{title}"}])
+            ki = next((i for i, k in enumerate(KITS) if k["title"] == title), -1)
+            if ki >= 0:
+                rows.append([{"text": f"🗑 {title} (все)", "callback_data": f"del_kit_all_idx_{ki}"}])
 
     rows += [
         [{"text":"⬅️ Назад в корзину", "callback_data":"show_cart"}],
@@ -470,26 +470,24 @@ async def del_idx(c: types.CallbackQuery):
         return await c.answer("Не удалось удалить", show_alert=True)
     await del_menu(c)
 
-@dp.callback_query(F.data.startswith("del_kit_"))
-async def del_kit(c: types.CallbackQuery):
+@dp.callback_query(F.data.startswith("del_kit_all_idx_"))
+async def del_kit_all_idx(c: types.CallbackQuery):
     uid = c.from_user.id
-    title = c.data[len("del_kit_"):]
-    k = next((x for x in KITS if x["title"] == title), None)
-    if not k:
+    try:
+        ki = int(c.data.split("_")[-1])
+        k = KITS[ki]
+    except Exception:
         return await c.answer("Набор не найден", show_alert=True)
-    need = len(k["items"])
-    removed = 0
-    new_cart = []
-    for it in CART.get(uid, []):
-        if removed < need and it.get("kit") == title:
-            removed += 1
-            continue
-        new_cart.append(it)
-    CART[uid] = new_cart
-    if removed == 0:
-        await c.answer("В корзине нет такого набора", show_alert=True)
-    else:
-        await c.answer(f"Удалён набор: {title}")
+
+    title = k["title"]
+    size = max(1, len(k["items"]))
+    total_items = sum(1 for it in CART.get(uid, []) if it.get("kit") == title)
+    if total_items == 0:
+        return await c.answer("В корзине нет такого набора", show_alert=True)
+
+    CART[uid] = [it for it in CART.get(uid, []) if it.get("kit") != title]
+    kits_removed = max(1, total_items // size)
+    await c.answer(f"Удалён набор: {title} ×{kits_removed}")
     await del_menu(c)
 
 @dp.callback_query(F.data=="clear_cart")
@@ -507,7 +505,8 @@ async def checkout(c: types.CallbackQuery):
     txt = cart_text(uid)
     await show_screen(
         c.message,
-        "✅ Заказ сформирован и отправлен продавцу.\nℹ️ Он уточнит актуальную цену и свяжется с вами.\n\n"+txt,
+        "✅ Заказ оформлен и отправлен продавцу.\n🙏 Спасибо за заказ! "
+        "Продавец свяжется с вами по поводу оплаты.\n\n" + txt,
         reply_markup=kb([seller_row(),
                          [{"text":"⬅️ В каталог","callback_data":"back_to_menu"}]])
     )
@@ -528,6 +527,10 @@ async def checkout(c: types.CallbackQuery):
 @dp.callback_query(F.data=="show_kits")
 async def show_kits(c: types.CallbackQuery):
     await cleanup_user(c.from_user.id)
+    try:
+        await bot.delete_message(c.message.chat.id, c.message.message_id)
+    except:
+        pass
     head = await c.message.answer("🎁 Доступные наборы:")
     await _remember(head)
     for i, k in enumerate(KITS):
@@ -565,7 +568,7 @@ async def buy_full(c: types.CallbackQuery):
     WAIT_FULL[uid] = True; CUR_NAME[uid] = ""
     await show_screen(
         c.message,
-        "💎 Напишите название парфюма и желаемый объём.\nℹ️ Продавец уточнит актуальную цену и свяжется с вами.",
+        "💎 Напишите название парфюма и желаемый объём.\nМы свяжемся с вами.",
         reply_markup=kb([seller_row(),
                          [{"text":"⬅️ В каталог","callback_data":"back_to_menu"}]])
     )
