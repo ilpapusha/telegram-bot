@@ -13,7 +13,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
 ADMIN_USERNAME = (os.getenv("ADMIN_USERNAME") or "").lstrip("@").strip()
 if not BOT_TOKEN: raise RuntimeError("BOT_TOKEN отсутствует")
 if not ADMIN_ID:  raise RuntimeError("ADMIN_ID отсутствует")
-SELLER_URL = f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None
+# Прямая ссылка в ЛС по ID — не вызывает плашку «нажмите здесь»
+SELLER_URL = f"tg://user?id={ADMIN_ID}" if ADMIN_ID else (f"https://t.me/{ADMIN_USERNAME}" if ADMIN_USERNAME else None)
 
 # ---------- ТЕКСТЫ ----------
 WELCOME_TEXT = (
@@ -129,6 +130,7 @@ WAIT_FULL: dict[int, bool] = {}
 WAIT_MANUAL: dict[int, bool] = {}
 WAIT_CONTACT: dict[int, bool] = {}
 CUR_NAME: dict[int, str] = {}
+# храним сообщения бота: [(chat_id, message_id), ...] — последнее всегда оставляем
 TRACK_MSGS: dict[int, list[tuple[int, int]]] = {}
 
 # ---------- УТИЛИТЫ / КЛАВЫ ----------
@@ -156,7 +158,7 @@ def brands_kb() -> KB:
     return kb(rows)
 
 def decant_kb(bi:int, pi:int, prices:dict) -> KB:
-    # только объёмы на кнопках
+    # Кнопки только объёмы (без цен)
     volumes = [{"text":f"{ml} мл", "callback_data":f"dec_add_{bi}_{pi}_{ml}"} for ml in (5,8,18) if ml in prices]
     return kb([
         volumes,
@@ -175,30 +177,38 @@ async def _safe_delete(chat_id: int, message_id: int):
     try:    await bot.delete_message(chat_id, message_id)
     except: pass
 
+# Оставляем последнее сообщение бота, остальное удаляем
 async def cleanup_user(uid: int):
-    for chat_id, mid in TRACK_MSGS.get(uid, []):
+    msgs = TRACK_MSGS.get(uid, [])
+    if not msgs:
+        return
+    to_delete = msgs[:-1]  # последнее — оставляем
+    for chat_id, mid in to_delete:
         await _safe_delete(chat_id, mid)
-    TRACK_MSGS[uid] = []
+    TRACK_MSGS[uid] = msgs[-1:]
 
+# Пытаемся редактировать текущее сообщение; если нельзя — отправляем новое
 async def show_screen(base_msg: types.Message, text: str, *, reply_markup=None):
     uid = base_msg.chat.id
-    # удалим предыдущее «полотно» бота
+    # очистим старые экраны, но оставим последний
     await cleanup_user(uid)
-    # удалим сообщение, на котором кликнули (если это было сообщение бота)
+
+    # Попытка редактирования (уменьшает «мигание» и не даёт чату опустеть)
     try:
-        await bot.delete_message(base_msg.chat.id, base_msg.message_id)
-    except:
-        pass
-    # покажем новый экран
-    m = await base_msg.answer(text, reply_markup=reply_markup)
-    await _remember(m)
-    return m
+        m = await base_msg.edit_text(text, reply_markup=reply_markup)
+        # Обновим трек: текущее сообщение стало актуальным
+        TRACK_MSGS.setdefault(uid, [])
+        TRACK_MSGS[uid] = [(cid, mid) for (cid, mid) in TRACK_MSGS[uid] if mid != m.message_id] + [(m.chat.id, m.message_id)]
+        return m
+    except Exception:
+        m = await base_msg.answer(text, reply_markup=reply_markup)
+        await _remember(m)
+        return m
 
 async def push_card(base_msg: types.Message, text_or_caption: str, *, photo_id: str | None, reply_markup=None):
-    if photo_id:
-        m = await base_msg.answer_photo(photo=photo_id, caption=text_or_caption, reply_markup=reply_markup)
-    else:
-        m = await base_msg.answer(text_or_caption, reply_markup=reply_markup)
+    m = (await base_msg.answer_photo(photo=photo_id, caption=text_or_caption, reply_markup=reply_markup)
+         if photo_id else
+         await base_msg.answer(text_or_caption, reply_markup=reply_markup))
     await _remember(m)
     return m
 
@@ -287,17 +297,13 @@ async def buy_split_manual(c: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("brand_"))
 async def show_brand(c: types.CallbackQuery):
-    # удалим сообщение, по которому кликнули (шапка не зависнет сверху)
-    try:
-        await bot.delete_message(c.message.chat.id, c.message.message_id)
-    except:
-        pass
     try:
         bi = int(c.data.split("_")[1])
         b = DECANT_BRANDS[bi]
     except Exception:
         return await c.answer("Бренд не найден", show_alert=True)
 
+    # Не удаляем сообщение-основание — чат не пустеет
     await cleanup_user(c.from_user.id)
     head = await c.message.answer(f"📚 {b['brand']}: доступные ароматы (листайте карточки ниже)")
     await _remember(head)
@@ -419,6 +425,41 @@ def _short_item_label(it: dict) -> str:
     if it.get("kit"): return f"[набор] {it['name']} {it['ml']} мл"
     return f"{it['name']} {it['ml']} мл"
 
+def cart_text(uid: int) -> str:
+    cart = CART.get(uid, [])
+    if not cart: return "🛒 Ваша корзина пуста."
+
+    kits_map, dec_map, manual_map = aggregate_cart(uid)
+    parts = ["🛒 <b>Ваша корзина</b>:"]
+    kits_total = dec_total = 0
+
+    if kits_map:
+        parts += ["", "<b>🎁 Наборы</b>"]
+        for title, count in sorted(kits_map.items(), key=lambda x: x[0].lower()):
+            k = next((x for x in KITS if x["title"] == title), None)
+            if k:
+                one = kit_price(k); sub = one * count; kits_total += sub
+                parts.append(f"🎁 {html_escape(title)} ×{count} — <b>{price_fmt(sub)}</b>")
+            else:
+                parts.append(f"🎁 {html_escape(title)} ×{count}")
+
+    if dec_map:
+        parts += ["", "<b>💧 Роспив</b>"]
+        for (name, ml, price_one), count in sorted(dec_map.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
+            sub = price_one * count; dec_total += sub
+            parts.append(f"• {html_escape(name)} — {ml} мл ×{count} — <b>{price_fmt(sub)}</b>")
+
+    if manual_map:
+        parts += ["", "<b>✍️ Позиции без цены</b>"]
+        for (name, ml), count in sorted(manual_map.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
+            parts.append(f"• {html_escape(name)} — {ml} мл ×{count}")
+
+    total = kits_total + dec_total
+    if total > 0:
+        parts += ["", f"<b>Итого: {price_fmt(total)}</b>"]
+
+    return "\n".join(parts)
+
 @dp.callback_query(F.data=="show_cart")
 async def show_cart(c: types.CallbackQuery):
     txt = cart_text(c.from_user.id)
@@ -527,10 +568,6 @@ async def checkout(c: types.CallbackQuery):
 @dp.callback_query(F.data=="show_kits")
 async def show_kits(c: types.CallbackQuery):
     await cleanup_user(c.from_user.id)
-    try:
-        await bot.delete_message(c.message.chat.id, c.message.message_id)
-    except:
-        pass
     head = await c.message.answer("🎁 Доступные наборы:")
     await _remember(head)
     for i, k in enumerate(KITS):
